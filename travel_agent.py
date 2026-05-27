@@ -9,9 +9,10 @@ from openai import OpenAI
 # ==========================================
 # 🚨 第 1 步：配置区
 # ==========================================
-API_KEY = "sk-c4u4c4wcrdrslwdht7zubc5rreizojhqfi17jfotm1gpx6ez" # Xiaomi Mimo / DeepSeek
-BASE_URL = "https://api.xiaomimimo.com/v1" 
-MODEL_ID = "mimo-v2.5-pro" 
+# 强烈建议测试成功后，通过 .env 文件加载，不要把明文 Key 留在代码里推送到 GitHub
+API_KEY_dict = {"xiaomi_key":"sk-c4u4c4wcrdrslwdht7zubc5rreizojhqfi17jfotm1gpx6ez" ,'deepseek_key':"sk-c24460f7c348437b8998a6e11670731e"}
+BASE_URL_list= ["https://api.xiaomimimo.com/v1" ,"https://api.deepseek.com"]
+MODEL_ID_list = ["mimo-v2.5-pro" ,"deepseek-v4-flash"]
 
 TAVILY_API_KEY = "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"
 os.environ['TAVILY_API_KEY'] = TAVILY_API_KEY
@@ -117,27 +118,27 @@ def get_weather(city: str) -> str:
     except:
         return f"错误: 无法获取{city}天气。"
 
-user_memory = {}
-def update_user_memory(key: str, value: str) -> str:
-    user_memory[key] = value
+user_prefer = {}
+def update_user_prefer(key: str, value: str) -> str:
+    user_prefer[key] = value
     return f"成功记录记忆: {key} -> {value}"
 
 available_tools = {
     "get_weather": get_weather,
     "get_attraction": get_attraction,
-    "update_user_memory": update_user_memory,
+    "update_user_prefer": update_user_prefer,
     "check_ticket_status": check_ticket_status
 }
 
 # ==========================================
-# 第 4 步：大模型客户端类
+# 第 4 步：底层架构 (大模型客户端 & 记忆模块)
 # ==========================================
 class OpenAICompatibleClient:
     def __init__(self, model, api_key, base_url):
         self.model = model
         self.client = OpenAI(api_key=api_key, base_url=base_url)
 
-    def generate(self, prompt, system_prompt, temp=0.1):
+    def generate(self, prompt, system_prompt, temp=0.1):# 生成文本，返回模型回复，prompt: 用户输入的主要提示内容，告诉模型需要做什么
         messages = [
             {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': prompt}
@@ -147,32 +148,77 @@ class OpenAICompatibleClient:
         )
         return response.choices[0].message.content
 
+
+class TravelMemory:
+    """
+    旅行智能体的专属记忆库，负责结构化存储和提取历史轨迹
+    """
+    def __init__(self):
+        # 内部使用列表存储字典，结构化记录每一步的类型和内容
+        self.records = []
+
+    def add_record(self, record_type: str, content: str):
+        """
+        向记忆中添加记录。
+        可选的 record_type: 'user_query', 'agent_action', 'observation', 'critic_feedback'
+        """
+        self.records.append({"type": record_type, "content": content})
+
+    def get_trajectory(self) -> str:
+        """
+        将结构化的记忆，翻译成大模型能看懂的连续对话轨迹
+        """
+        trajectory_lines = []
+        for record in self.records:
+            if record['type'] == 'user_query':
+                trajectory_lines.append(f"用户请求: {record['content']}")
+            elif record['type'] == 'agent_action':
+                trajectory_lines.append(record['content']) # 直接拼入 Thought 和 Action
+            elif record['type'] == 'observation':
+                trajectory_lines.append(f"Observation: {record['content']}")
+            elif record['type'] == 'critic_feedback':
+                # 质检员的严厉警告
+                trajectory_lines.append(f"Observation: 【质检警告】{record['content']} 请立刻重新审视历史 Observation，调用更正确的 Action！")
+        
+        return "\n".join(trajectory_lines)
+        
+    def clear(self):
+        """清空当前记忆"""
+        self.records.clear()
+
 # ==========================================
-# 🌟 核心修改：将主循环整体包装成给外壳调用的函数
+# 第 5 步：智能体核心循环 (Agent Loop)
 # ==========================================
 def invoke_travel_agent(user_query: str, max_turns: int = 20) -> str:
     """供 FastAPI 调用的智能体核心引擎入口"""
-    # 每次调用清空一次临时记忆，防止上一次请求干扰
-    global user_memory
-    user_memory.clear()
+    global user_prefer#声明使用全局变量user_prefer
+    user_prefer.clear()#清空全局变量user_prefer中的所有内容
     
-    llm = OpenAICompatibleClient(model=MODEL_ID, api_key=API_KEY, base_url=BASE_URL)
-    prompt_history = [f"用户请求: {user_query}"]
-    last_action = ""
+    llm = OpenAICompatibleClient(model=MODEL_ID_list[1], api_key=API_KEY_dict['deepseek_key'], base_url=BASE_URL_list[1])
+    
+    # 🌟 实例化记忆库，存入初始任务
+    memory = TravelMemory()
+    memory.add_record("user_query", user_query)
+    
+    last_action = ""#记录上一次的Action，用于判断是否需要触发Reflection，初始值为空字符串
 
-    print(f"\n🚀 Agent 后厨开始运作，收到任务: {user_query}")
+    print(f"\n🚀 Agent收到任务，开始运作: {user_query}")
+
 
     for i in range(max_turns):
         print(f"🤖 Agent 正在进行第 {i+1} 轮思考...")
-        memory_ctx = f"\n# 用户记忆档案:\n{user_memory if user_memory else '尚无记录'}"
+        memory_ctx = f"\n# 用户记忆档案:\n{user_prefer if user_prefer else '尚无记录'}"
         
-        llm_output = llm.generate("\n".join(prompt_history), AGENT_SYSTEM_PROMPT + memory_ctx, temp=0.1)
+        # 🌟 从记忆库优雅地提取轨迹交给大模型
+        trajectory_str = memory.get_trajectory()
+        llm_output = llm.generate(trajectory_str, AGENT_SYSTEM_PROMPT + memory_ctx, temp=0.1)
         
         # 格式解析
         match = re.search(r'(Thought:.*?Action:.*?)(?=\n\s*(?:Thought:|Action:|Observation:)|\Z)', llm_output, re.DOTALL)
         if match: llm_output = match.group(1).strip()
         
-        prompt_history.append(llm_output)
+        # 🌟 把大模型本轮的动作存入记忆
+        memory.add_record("agent_action", llm_output)
         
         action_match = re.search(r"Action:\s*(.*)", llm_output, re.DOTALL)
         if not action_match: continue
@@ -185,15 +231,17 @@ def invoke_travel_agent(user_query: str, max_turns: int = 20) -> str:
             res = res_match.group(1) if res_match else action_str.replace("Finish", "")
             
             print("🕵️‍♂️ 质检官正在严格复核最终答案...")
-            critic_input = f"【管家历史执行轨迹】:\n{chr(10).join(prompt_history[:-1])}\n\n【管家提交的最终答案】:\n{res}"
+            # 🌟 把轨迹交给质检员
+            critic_input = f"【管家历史执行轨迹】:\n{memory.get_trajectory()}\n\n【管家提交的最终答案】:\n{res}"
             feedback = llm.generate(critic_input, REFLECT_PROMPT_TEMPLATE, temp=0.0)
             
             if "[PASS]" in feedback:
-                print("✅ 通过质检！正在向外壳交付方案。")
+                print("通过质检！")
                 return res
             else:
-                print("❌ 质检未通过！勒令重修。")
-                prompt_history.append(f"Observation: 【质检警告】{feedback} 请立刻重新审视历史 Observation，调用更正确的 Action！")
+                print("质检未通过！重新思考。")
+                # 🌟 把质检员的批评存入记忆库
+                memory.add_record("critic_feedback", feedback)
                 last_action = ""
                 continue
         
@@ -210,12 +258,13 @@ def invoke_travel_agent(user_query: str, max_turns: int = 20) -> str:
             except Exception as e:
                 observation = f"错误: 解析失败 - {e}"
 
-        prompt_history.append(f"Observation: {observation}")
+        # 🌟 把工具返回的观测结果存入记忆
+        memory.add_record("observation", observation)
         
     return "【系统提示】Agent 思考达到轮数上限，未能通过最终质验证，请缩小范围后重试。"
 
-# 保留单机测试能力（直接运行 python travel_agent.py 依然可以本地测）
+
 if __name__ == "__main__":
-    test_query = "你好，我想去北京旅行倾向于古建筑，根据天气推荐几个的旅游景点。"
+    test_query = "你好，我想去厦门旅行倾向于古建筑，根据天气推荐几个的旅游景点。"
     result = invoke_travel_agent(test_query)
-    print(f"\n本地测试交付结果:\n{result}")
+    print(f"✅ 旅行智能体:{result}")
