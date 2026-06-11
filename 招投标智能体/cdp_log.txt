@@ -1,0 +1,14 @@
+[1] Connecting to Edge via CDP...
+  Found 1 contexts
+  Found 2 pages
+  Current URL: https://mineru.net/
+  Title: MinerU | 一站式 PDF 文档解析工具 | 在线API + 离线部署 + 桌面客户端
+  Screenshot saved: D:\PythonProject\hello_agent\mineru_page.png
+[2] Looking for upload elements...
+  Found 0 file inputs
+  Button: '多模态与全格式兼容'
+  Button: '高并发与 Agent 自动化处理'
+  Button: '高度结构化与机器可读输出'
+  Button: '原生接入主流 Agent 工作流'
+  Upload area: <DIV> class='relative w-full flex items-center justify-center py-2 z-[99999] duration-300 min'
+[3] Done scanning. Check cdp_log.txt and mineru_page.png
